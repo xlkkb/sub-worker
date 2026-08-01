@@ -155,7 +155,7 @@ Deno.serve(async (req) => {
             headers: { "content-type": "text/plain; charset=utf-8" }
         });
 
-    } caught (err: any) {
+    } catch (err: any) {
         return new Response("程序运行发生异常: " + (err?.message || String(err)), { 
             status: 500,
             headers: { "content-type": "text/plain;charset=utf-8" }
