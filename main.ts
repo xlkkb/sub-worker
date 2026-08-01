@@ -5,7 +5,6 @@ const ADMIN_USER = Deno.env.get("ADMIN_USER") || "admin";
 const ADMIN_PASS = Deno.env.get("ADMIN_PASS") || "123456";
 const SUB_TOKEN  = Deno.env.get("SUB_TOKEN")  || "sub123";
 
-// 容错处理：自动在开头补齐 /，并规范化格式
 let configuredPath = (Deno.env.get("ADMIN_PATH") || "/dashboard").trim();
 if (!configuredPath.startsWith("/")) {
     configuredPath = "/" + configuredPath;
@@ -23,7 +22,6 @@ Deno.serve(async (req) => {
     try {
         const url = new URL(req.url);
         
-        // 容错处理：忽略请求路径末尾多余的斜杠 /
         let path = url.pathname;
         if (path.endsWith("/") && path.length > 1) {
             path = path.slice(0, -1);
@@ -36,7 +34,6 @@ Deno.serve(async (req) => {
             return new Response("Deno KV 连接失败: " + e.message, { status: 500 });
         }
 
-        // 验证 Cookie 会话
         const cookieHeader = req.headers.get("cookie") || "";
         const isLoggedIn = cookieHeader.includes(`${AUTH_COOKIE_NAME}=${AUTH_COOKIE_VALUE}`);
 
@@ -79,7 +76,6 @@ Deno.serve(async (req) => {
                 return renderLoginPage();
             }
 
-            // 保存数据 (POST)
             if (req.method === "POST") {
                 try {
                     const bodyText = await req.text();
@@ -90,7 +86,6 @@ Deno.serve(async (req) => {
                 }
             }
 
-            // 读取页面 (GET)
             const res = await kv.get(KV_KEY);
             const currentContent = res.value || "";
             return renderDashboardPage(currentContent, url.origin);
@@ -124,10 +119,14 @@ Deno.serve(async (req) => {
 
             for (const line of lines) {
                 if (line.startsWith('http://') || line.startsWith('https://')) {
+                    // 为每个订阅源请求增加 4秒 强制超时熔断，防止死锁卡顿
                     fetchPromises.push(
-                        fetch(line, { headers: { 'User-Agent': 'v2rayN/6.0' } })
-                            .then(r => r.ok ? r.text() : '')
-                            .catch(() => '')
+                        fetch(line, { 
+                            headers: { 'User-Agent': 'v2rayN/6.0' },
+                            signal: AbortSignal.timeout(4000) 
+                        })
+                        .then(r => r.ok ? r.text() : '')
+                        .catch(() => '') // 无论网络超时还是连接报错，直接无视跳过
                     );
                 } else {
                     nodes.push(line);
