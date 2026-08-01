@@ -105,78 +105,54 @@ Deno.serve(async (req) => {
 
             const rawLines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-            let nodes: string[] = [];
-            let fetchPromises = [];
+            // 严格按原行号顺序处理每一行
+            const linePromises = rawLines.map(async (line) => {
+                // 过滤纯注释行
+                if (line.startsWith('#')) return [];
 
-            for (let line of rawLines) {
-                // 忽略纯注释行
-                if (line.startsWith('#')) continue;
+                // 去除尾部空格注释（如：http://sub.com # 机场A）
+                const spaceCommentIdx = line.indexOf(' #');
+                if (spaceCommentIdx !== -1) {
+                    line = line.substring(0, spaceCommentIdx).trim();
+                }
 
+                if (line.length === 0) return [];
+
+                // 如果是远程订阅链接
                 if (line.startsWith('http://') || line.startsWith('https://')) {
-                    // 仅去除 URL 后面带空格的尾部注释（例如: http://sub.com # 机场A）
-                    const spaceCommentIdx = line.indexOf(' #');
-                    if (spaceCommentIdx !== -1) {
-                        line = line.substring(0, spaceCommentIdx).trim();
-                    }
-
-                    fetchPromises.push(
-                        fetch(line, { 
+                    try {
+                        const response = await fetch(line, { 
                             headers: { 'User-Agent': 'v2rayN/6.0' },
                             signal: AbortSignal.timeout(4000) 
-                        })
-                        .then(r => r.ok ? r.text() : '')
-                        .catch(() => '')
-                    );
-                } else {
-                    // 直连节点：保留完整的 #节点别名，仅处理多余的尾部注释
-                    const spaceCommentIdx = line.indexOf(' #');
-                    if (spaceCommentIdx !== -1) {
-                        line = line.substring(0, spaceCommentIdx).trim();
+                        });
+                        if (!response.ok) return [];
+
+                        let sub = (await response.text()).trim();
+                        if (!sub) return [];
+
+                        // 自动判别 Base64 并解码
+                        if (!sub.includes('://')) {
+                            sub = decodeBase64Utf8(sub);
+                        }
+
+                        // 提取该订阅里的所有节点
+                        return sub.split('\n')
+                            .map(l => l.trim())
+                            .filter(l => l.length > 0 && !l.startsWith('#'));
+                    } catch {
+                        return []; // 链接超时或失败时跳过，不打乱整体
                     }
-                    if (line.length > 0) {
-                        nodes.push(line);
-                    }
-                }
-            }
-
-            const subContents = await Promise.all(fetchPromises);
-            for (let sub of subContents) {
-                if (!sub) continue;
-                sub = sub.trim();
-                let decoded = sub;
-                
-                // 如果拉取到的内容不包含 ://，说明是全 Base64 编码的订阅，进行 UTF-8 解码
-                if (!sub.includes('://')) {
-                    decoded = decodeBase64Utf8(sub);
-                }
-
-                const subNodes = decoded.split('\n')
-                    .map(l => l.trim())
-                    .filter(l => l.length > 0 && !l.startsWith('#')); // 过滤空行与纯注释，保留完整的节点别名
-
-                nodes.push(...subNodes);
-            }
-
-            // 按协议排序分组
-            const protocolGroups: Record<string, string[]> = {};
-            for (const node of nodes) {
-                const match = node.match(/^([a-zA-Z0-9]+):\/\//);
-                if (match) {
-                    const protocol = match[1].toLowerCase();
-                    if (!protocolGroups[protocol]) protocolGroups[protocol] = [];
-                    protocolGroups[protocol].push(node);
                 } else {
-                    if (!protocolGroups['other']) protocolGroups['other'] = [];
-                    protocolGroups['other'].push(node);
+                    // 如果是直连单节点，原样保留
+                    return [line];
                 }
-            }
+            });
 
-            let groupedNodes: string[] = [];
-            for (const proto of Object.keys(protocolGroups).sort()) {
-                groupedNodes.push(...protocolGroups[proto]);
-            }
+            // 等待所有行处理完成，并按原顺序压平数组
+            const results = await Promise.all(linePromises);
+            const finalNodes = results.flat();
 
-            const finalString = groupedNodes.join('\n');
+            const finalString = finalNodes.join('\n');
             const finalBase64 = encodeBase64Utf8(finalString);
 
             return new Response(finalBase64, {
@@ -278,7 +254,7 @@ function renderDashboardPage(currentContent: string, origin: string) {
             <h2>Deno 节点聚合管理器</h2>
             <a href="${ADMIN_PATH}/logout" class="logout-btn">退出登录</a>
         </div>
-        <p class="hint">提示：直接粘贴带 <code>#节点别名</code> 的链接即可完整保留别名（包含中文、英文、数字与 <code>-</code> 符号）。若要加注释请在行首加 <code>#</code>。</p>
+        <p class="hint">提示：节点将完全严格按照上方输入的顺序排布输出。</p>
         <textarea id="content" placeholder="https://example.com/sub # 订阅源1&#10;# 这是一个忽略的注释行&#10;vmess://......#香港01-HKNode">${currentContent}</textarea>
         <div>
             <button onclick="save()">保存配置</button>
