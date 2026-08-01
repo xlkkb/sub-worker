@@ -103,33 +103,39 @@ Deno.serve(async (req) => {
             const res = await kv.get(KV_KEY);
             const rawContent = res.value || "";
 
-            // 解析节点：剥离 # 注释与过滤空行
-            const lines = rawContent.split('\n')
-                .map(line => {
-                    const commentIdx = line.indexOf('#');
-                    if (commentIdx !== -1) {
-                        line = line.substring(0, commentIdx);
-                    }
-                    return line.trim();
-                })
-                .filter(line => line.length > 0);
+            const rawLines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
             let nodes: string[] = [];
             let fetchPromises = [];
 
-            for (const line of lines) {
+            for (let line of rawLines) {
+                // 忽略纯注释行
+                if (line.startsWith('#')) continue;
+
                 if (line.startsWith('http://') || line.startsWith('https://')) {
-                    // 为每个订阅源请求增加 4秒 强制超时熔断，防止死锁卡顿
+                    // 仅去除 URL 后面带空格的尾部注释（例如: http://sub.com # 机场A）
+                    const spaceCommentIdx = line.indexOf(' #');
+                    if (spaceCommentIdx !== -1) {
+                        line = line.substring(0, spaceCommentIdx).trim();
+                    }
+
                     fetchPromises.push(
                         fetch(line, { 
                             headers: { 'User-Agent': 'v2rayN/6.0' },
                             signal: AbortSignal.timeout(4000) 
                         })
                         .then(r => r.ok ? r.text() : '')
-                        .catch(() => '') // 无论网络超时还是连接报错，直接无视跳过
+                        .catch(() => '')
                     );
                 } else {
-                    nodes.push(line);
+                    // 直连节点：保留完整的 #节点别名，仅处理多余的尾部注释
+                    const spaceCommentIdx = line.indexOf(' #');
+                    if (spaceCommentIdx !== -1) {
+                        line = line.substring(0, spaceCommentIdx).trim();
+                    }
+                    if (line.length > 0) {
+                        nodes.push(line);
+                    }
                 }
             }
 
@@ -138,17 +144,16 @@ Deno.serve(async (req) => {
                 if (!sub) continue;
                 sub = sub.trim();
                 let decoded = sub;
+                
+                // 如果拉取到的内容不包含 ://，说明是全 Base64 编码的订阅，进行 UTF-8 解码
                 if (!sub.includes('://')) {
-                    try {
-                        decoded = atob(sub.replace(/-/g, '+').replace(/_/g, '/'));
-                    } catch {}
+                    decoded = decodeBase64Utf8(sub);
                 }
+
                 const subNodes = decoded.split('\n')
-                    .map(l => {
-                        const cIdx = l.indexOf('#');
-                        return (cIdx !== -1 ? l.substring(0, cIdx) : l).trim();
-                    })
-                    .filter(l => l.length > 0);
+                    .map(l => l.trim())
+                    .filter(l => l.length > 0 && !l.startsWith('#')); // 过滤空行与纯注释，保留完整的节点别名
+
                 nodes.push(...subNodes);
             }
 
@@ -172,7 +177,7 @@ Deno.serve(async (req) => {
             }
 
             const finalString = groupedNodes.join('\n');
-            const finalBase64 = encodeBase64(finalString);
+            const finalBase64 = encodeBase64Utf8(finalString);
 
             return new Response(finalBase64, {
                 headers: { "content-type": "text/plain; charset=utf-8" }
@@ -188,6 +193,31 @@ Deno.serve(async (req) => {
         });
     }
 });
+
+// 支持完整 UTF-8 中文及特殊字符的 Base64 解码器
+function decodeBase64Utf8(str: string): string {
+    try {
+        let cleanStr = str.trim().replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
+        while (cleanStr.length % 4 !== 0) {
+            cleanStr += '=';
+        }
+        const binary = atob(cleanStr);
+        const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+        return new TextDecoder('utf-8').decode(bytes);
+    } catch {
+        return str;
+    }
+}
+
+// 支持完整 UTF-8 中文及特殊字符的 Base64 编码器
+function encodeBase64Utf8(data: string): string {
+    const bytes = new TextEncoder().encode(data);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
 
 function renderLoginPage(errorMsg = "") {
     const html = `
@@ -248,8 +278,8 @@ function renderDashboardPage(currentContent: string, origin: string) {
             <h2>Deno 节点聚合管理器</h2>
             <a href="${ADMIN_PATH}/logout" class="logout-btn">退出登录</a>
         </div>
-        <p class="hint">提示：支持 <code>#</code> 添加注释（整行或行尾注释），空行自动跳过。</p>
-        <textarea id="content" placeholder="https://example.com/sub # 订阅源1&#10;# 这是一个忽略的注释行&#10;vmess://......">${currentContent}</textarea>
+        <p class="hint">提示：直接粘贴带 <code>#节点别名</code> 的链接即可完整保留别名（包含中文、英文、数字与 <code>-</code> 符号）。若要加注释请在行首加 <code>#</code>。</p>
+        <textarea id="content" placeholder="https://example.com/sub # 订阅源1&#10;# 这是一个忽略的注释行&#10;vmess://......#香港01-HKNode">${currentContent}</textarea>
         <div>
             <button onclick="save()">保存配置</button>
             <span id="status" style="margin-left: 15px; color: #28a745; font-weight: bold;"></span>
@@ -281,13 +311,4 @@ function renderDashboardPage(currentContent: string, origin: string) {
     </body>
     </html>`;
     return new Response(html, { headers: { "content-type": "text/html;charset=utf-8" } });
-}
-
-function encodeBase64(data: string) {
-    const bytes = new TextEncoder().encode(data);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
 }
