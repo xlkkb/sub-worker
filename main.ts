@@ -7,13 +7,15 @@ Deno.serve(async (req) => {
         const token = url.searchParams.get('token') || url.pathname.slice(1);
         const authKey = Deno.env.get("TOKEN") || DEFAULT_TOKEN;
 
+        // 1. 强制登录鉴权
         if (token !== authKey && !url.searchParams.has('sub')) {
             return new Response("Unauthorized. Access Denied.", { status: 401 });
         }
 
+        // 自动连接到后台创建好的项目默认 KV 数据库
         let kv;
         try {
-            kv = await Deno.openKv("sub-kv");
+            kv = await Deno.openKv();
         } catch (e: any) {
             return new Response("Deno KV 连接失败: " + e.message, { status: 500 });
         }
@@ -21,6 +23,9 @@ Deno.serve(async (req) => {
         const userAgent = req.headers.get("user-agent")?.toLowerCase() || "";
         const isBrowser = userAgent.includes("mozilla") && !url.searchParams.has("sub");
 
+        // ==========================================
+        // 前台：KV 订阅编辑与管理页面
+        // ==========================================
         if (isBrowser) {
             if (req.method === "POST") {
                 try {
@@ -89,6 +94,9 @@ Deno.serve(async (req) => {
             return new Response(html, { headers: { "content-type": "text/html;charset=utf-8" } });
         }
 
+        // ==========================================
+        // 后台：多源抓取、高端口支持、协议聚类
+        // ==========================================
         const res = await kv.get(KV_KEY);
         const rawContent = res.value || "";
         const lines = rawContent.split('\n').map((l: string) => l.trim()).filter((l: string) => l);
