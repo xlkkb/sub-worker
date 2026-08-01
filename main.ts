@@ -1,10 +1,19 @@
 // ==========================================
-// 1. 基础配置（可在此处修改默认值，或在后台环境变量中配置）
+// 1. 基础配置与路径格式自动修正
 // ==========================================
-const ADMIN_USER = Deno.env.get("ADMIN_USER") || "admin";        // 管理员用户名
-const ADMIN_PASS = Deno.env.get("ADMIN_PASS") || "123456";       // 管理员密码
-const ADMIN_PATH = Deno.env.get("ADMIN_PATH") || "/dashboard";    // 自定义后台子路径
-const SUB_TOKEN  = Deno.env.get("SUB_TOKEN")  || "sub123";        // 客户端订阅 Token
+const ADMIN_USER = Deno.env.get("ADMIN_USER") || "admin";
+const ADMIN_PASS = Deno.env.get("ADMIN_PASS") || "123456";
+const SUB_TOKEN  = Deno.env.get("SUB_TOKEN")  || "sub123";
+
+// 容错处理：自动在开头补齐 /，并规范化格式
+let configuredPath = (Deno.env.get("ADMIN_PATH") || "/dashboard").trim();
+if (!configuredPath.startsWith("/")) {
+    configuredPath = "/" + configuredPath;
+}
+if (configuredPath.endsWith("/") && configuredPath.length > 1) {
+    configuredPath = configuredPath.slice(0, -1);
+}
+const ADMIN_PATH = configuredPath;
 
 const KV_KEY = ['links_data'];
 const AUTH_COOKIE_NAME = "deno_sub_session";
@@ -13,7 +22,12 @@ const AUTH_COOKIE_VALUE = btoa(`${ADMIN_USER}:${ADMIN_PASS}`);
 Deno.serve(async (req) => {
     try {
         const url = new URL(req.url);
-        const path = url.pathname;
+        
+        // 容错处理：忽略请求路径末尾多余的斜杠 /
+        let path = url.pathname;
+        if (path.endsWith("/") && path.length > 1) {
+            path = path.slice(0, -1);
+        }
 
         let kv;
         try {
@@ -22,7 +36,7 @@ Deno.serve(async (req) => {
             return new Response("Deno KV 连接失败: " + e.message, { status: 500 });
         }
 
-        // 验证 Cookie 是否登录
+        // 验证 Cookie 会话
         const cookieHeader = req.headers.get("cookie") || "";
         const isLoggedIn = cookieHeader.includes(`${AUTH_COOKIE_NAME}=${AUTH_COOKIE_VALUE}`);
 
@@ -94,16 +108,16 @@ Deno.serve(async (req) => {
             const res = await kv.get(KV_KEY);
             const rawContent = res.value || "";
 
-            // 解析节点列表：剥离 # 注释与剔除空行
+            // 解析节点：剥离 # 注释与过滤空行
             const lines = rawContent.split('\n')
                 .map(line => {
                     const commentIdx = line.indexOf('#');
                     if (commentIdx !== -1) {
-                        line = line.substring(0, commentIdx); // 去掉 # 后面的所有内容
+                        line = line.substring(0, commentIdx);
                     }
                     return line.trim();
                 })
-                .filter(line => line.length > 0); // 跳过空行
+                .filter(line => line.length > 0);
 
             let nodes: string[] = [];
             let fetchPromises = [];
@@ -139,7 +153,7 @@ Deno.serve(async (req) => {
                 nodes.push(...subNodes);
             }
 
-            // 按协议进行分组排序
+            // 按协议排序分组
             const protocolGroups: Record<string, string[]> = {};
             for (const node of nodes) {
                 const match = node.match(/^([a-zA-Z0-9]+):\/\//);
@@ -176,7 +190,6 @@ Deno.serve(async (req) => {
     }
 });
 
-// 登录页 HTML
 function renderLoginPage(errorMsg = "") {
     const html = `
     <!DOCTYPE html>
@@ -210,7 +223,6 @@ function renderLoginPage(errorMsg = "") {
     return new Response(html, { headers: { "content-type": "text/html;charset=utf-8" } });
 }
 
-// 后台管理 HTML
 function renderDashboardPage(currentContent: string, origin: string) {
     const subUrl = `${origin}/sub?token=${SUB_TOKEN}`;
     const html = `
@@ -238,7 +250,7 @@ function renderDashboardPage(currentContent: string, origin: string) {
             <a href="${ADMIN_PATH}/logout" class="logout-btn">退出登录</a>
         </div>
         <p class="hint">提示：支持 <code>#</code> 添加注释（整行或行尾注释），空行自动跳过。</p>
-        <textarea id="content" placeholder="https://example.com/sub # 订阅源1&#10;# 这是一个完全忽略的注释行&#10;vmess://......">${currentContent}</textarea>
+        <textarea id="content" placeholder="https://example.com/sub # 订阅源1&#10;# 这是一个忽略的注释行&#10;vmess://......">${currentContent}</textarea>
         <div>
             <button onclick="save()">保存配置</button>
             <span id="status" style="margin-left: 15px; color: #28a745; font-weight: bold;"></span>
